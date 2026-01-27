@@ -517,4 +517,48 @@ TEST_F(nix_api_expr_test, nix_expr_attrset_update)
     assert_ctx_ok();
 }
 
+TEST_F(nix_api_expr_test, nix_expr_filterAttrs)
+{
+    // Test filterAttrs which may use tombstone-based layering internally
+    // when filtering out a small number of attributes
+    nix_expr_eval_from_string(
+        ctx,
+        state,
+        "builtins.filterAttrs (name: value: name != \"b\") { a = 1; b = 2; c = 3; d = 4; e = 5; }",
+        ".",
+        value);
+    assert_ctx_ok();
+
+    // Should have 4 attributes (b filtered out)
+    ASSERT_EQ(nix_get_attrs_size(ctx, value), 4);
+    assert_ctx_ok();
+
+    // Collect and sort attributes
+    std::array<std::pair<std::string_view, nix_value *>, 4> values;
+    for (unsigned int i = 0; i < 4; ++i) {
+        const char * name;
+        values[i].second = nix_get_attr_byidx(ctx, value, state, i, &name);
+        assert_ctx_ok();
+        values[i].first = name;
+    }
+    std::sort(values.begin(), values.end(), [](const auto & lhs, const auto & rhs) { return lhs.first < rhs.first; });
+
+    // Verify the kept attributes
+    ASSERT_EQ("a", values[0].first);
+    ASSERT_EQ(nix_get_int(ctx, values[0].second), 1);
+    ASSERT_EQ("c", values[1].first);
+    ASSERT_EQ(nix_get_int(ctx, values[1].second), 3);
+    ASSERT_EQ("d", values[2].first);
+    ASSERT_EQ(nix_get_int(ctx, values[2].second), 4);
+    ASSERT_EQ("e", values[3].first);
+    ASSERT_EQ(nix_get_int(ctx, values[3].second), 5);
+    assert_ctx_ok();
+
+    // Verify that "b" is not accessible
+    nix_value * b = nix_get_attr_byname(ctx, value, state, "b");
+    ASSERT_EQ(b, nullptr);
+    ASSERT_EQ(nix_err_code(ctx), NIX_ERR_KEY);
+    nix_clear_err(ctx);
+}
+
 } // namespace nixC

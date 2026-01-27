@@ -3533,26 +3533,72 @@ static void prim_filterAttrs(EvalState & state, const PosIdx pos, Value ** args,
 {
     state.forceAttrs(*args[1], pos, "while evaluating the second argument passed to builtins.filterAttrs");
 
-    if (args[1]->attrs()->empty()) {
+    const Bindings & input = *args[1]->attrs();
+
+    if (input.empty()) {
         v = *args[1];
         return;
     }
 
     state.forceFunction(*args[0], pos, "while evaluating the first argument passed to builtins.filterAttrs");
 
-    auto attrs = state.buildBindings(args[1]->attrs()->size());
+    // Collect names of filtered-out attrs. This optimizes for the common case
+    // where most attributes pass the filter.
+    boost::container::small_vector<Symbol, 16> filtered;
 
-    for (auto & i : *args[1]->attrs()) {
-        Value * vName = Value::toPtr(state.symbols[i.name]);
-        Value * callArgs[] = {vName, i.value};
+    for (const auto & attr : input) {
+        Value * vName = Value::toPtr(state.symbols[attr.name]);
+        Value * callArgs[] = {vName, attr.value};
         Value res;
         state.callFunction(*args[0], callArgs, res, noPos);
-        if (state.forceBool(
+        if (!state.forceBool(
                 res, pos, "while evaluating the return value of the filtering function passed to builtins.filterAttrs"))
-            attrs.insert(i.name, i.value);
+            filtered.push_back(attr.name);
     }
 
-    v.mkAttrs(attrs.alreadySorted());
+    // If nothing was filtered out, return the original attrset
+    if (filtered.empty()) {
+        v = *args[1];
+        return;
+    }
+
+    size_t numKept = input.size() - filtered.size();
+
+    // If everything was filtered out, return empty
+    if (numKept == 0) {
+        v.mkAttrs(&Bindings::emptyBindings);
+        return;
+    }
+
+    // Decide whether to use layering with tombstones or copying.
+    // Use layering when few attrs are filtered out and layer list isn't full.
+    bool shouldLayer = !input.isLayerListFull()
+        && filtered.size() <= state.settings.bindingsUpdateLayerRhsSizeThreshold;
+
+    if (shouldLayer) {
+        // Layer tombstones on top of the original attrset
+        auto attrs = state.buildBindings(filtered.size());
+        attrs.layerOnTopOf(input);
+
+        for (Symbol name : filtered)
+            attrs.insert(name, nullptr);
+
+        v.mkAttrs(attrs.alreadySorted());
+    } else {
+        // Copy kept attributes, skipping filtered ones.
+        // Both input and filtered are sorted by Symbol, so we merge-iterate.
+        auto attrs = state.buildBindings(numKept);
+        auto filteredIt = filtered.begin();
+
+        for (const auto & attr : input) {
+            if (filteredIt != filtered.end() && attr.name == *filteredIt)
+                ++filteredIt;
+            else
+                attrs.insert(attr.name, attr.value, attr.pos);
+        }
+
+        v.mkAttrs(attrs.alreadySorted());
+    }
 }
 
 static RegisterPrimOp primop_filterAttrs({
