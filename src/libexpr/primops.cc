@@ -615,6 +615,46 @@ static RegisterPrimOp primop_isFunction({
     .fun = prim_isFunction,
 });
 
+/* Determine whether the argument is a function or a functor (an attrset with __functor). */
+static void prim_isFunctionOrFunctor(EvalState & state, const PosIdx pos, Value ** args, Value & v)
+{
+    Value * val = args[0];
+    while (true) {
+        state.forceValue(*val, pos);
+
+        if (val->type() == nFunction) {
+            v.mkBool(true);
+            return;
+        }
+
+        if (val->type() == nAttrs) {
+            if (auto functor = val->attrs()->get(state.s.functor)) {
+                Value * applied = state.allocValue();
+                state.callFunction(*functor->value, *val, *applied, pos);
+                val = applied;
+                continue;
+            }
+        }
+
+        v.mkBool(false);
+        return;
+    }
+}
+
+static RegisterPrimOp primop_isFunctionOrFunctor({
+    .name = "__isFunctionOrFunctor",
+    .args = {"e"},
+    .doc = R"(
+      Return `true` if *e* evaluates to a function or a "functor" (an attribute
+      set with a `__functor` attribute that ultimately resolves to a function),
+      and `false` otherwise.
+
+      This is equivalent to the `lib.isFunction` check in nixpkgs, but
+      implemented as a primop for efficiency.
+    )",
+    .fun = prim_isFunctionOrFunctor,
+});
+
 /* Determine whether the argument is an integer. */
 static void prim_isInt(EvalState & state, const PosIdx pos, Value ** args, Value & v)
 {
