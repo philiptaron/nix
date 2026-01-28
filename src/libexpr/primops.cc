@@ -3818,6 +3818,66 @@ static RegisterPrimOp primop_elem({
     .fun = prim_elem,
 });
 
+/* Remove elements from a list that occur in another list. */
+static void prim_subtractLists(EvalState & state, const PosIdx pos, Value ** args, Value & v)
+{
+    state.forceList(*args[0], pos, "while evaluating the first argument passed to builtins.subtractLists");
+    state.forceList(*args[1], pos, "while evaluating the second argument passed to builtins.subtractLists");
+
+    auto removeListView = args[0]->listView();
+    auto listView = args[1]->listView();
+
+    // Fast path: if either list is empty, we can return early
+    if (args[1]->listSize() == 0) {
+        v = *args[1];
+        return;
+    }
+
+    if (args[0]->listSize() == 0) {
+        v = *args[1];
+        return;
+    }
+
+    auto len = args[1]->listSize();
+    SmallValueVector<nonRecursiveStackReservation> vs(len);
+    size_t k = 0;
+
+    bool same = true;
+    for (size_t n = 0; n < len; ++n) {
+        bool found = false;
+        for (auto removeElem : removeListView) {
+            if (state.eqValues(*listView[n], *removeElem, pos, "while comparing elements in builtins.subtractLists")) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            vs[k++] = listView[n];
+        else
+            same = false;
+    }
+
+    if (same)
+        v = *args[1];
+    else {
+        auto list = state.buildList(k);
+        for (const auto & [n, v] : enumerate(list))
+            v = vs[n];
+        v.mkList(list);
+    }
+}
+
+static RegisterPrimOp primop_subtractLists({
+    .name = "__subtractLists",
+    .args = {"e", "list"},
+    .doc = R"(
+      Return a list consisting of the elements of *list* that are not
+      in *e*. This is an O(nm) operation where n is the size of *e* and
+      m is the size of *list*.
+    )",
+    .fun = prim_subtractLists,
+});
+
 /* Concatenate a list of lists. */
 static void prim_concatLists(EvalState & state, const PosIdx pos, Value ** args, Value & v)
 {
