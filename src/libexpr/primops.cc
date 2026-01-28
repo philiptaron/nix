@@ -3746,6 +3746,50 @@ static RegisterPrimOp primop_map({
     .fun = prim_map,
 });
 
+/* Apply a function to every element of a list, passing a 1-based index. */
+static void prim_imap1(EvalState & state, const PosIdx pos, Value ** args, Value & v)
+{
+    state.forceList(*args[1], pos, "while evaluating the second argument passed to builtins.imap1");
+
+    if (args[1]->listSize() == 0) {
+        v = *args[1];
+        return;
+    }
+
+    state.forceFunction(*args[0], pos, "while evaluating the first argument passed to builtins.imap1");
+
+    auto list = state.buildList(args[1]->listSize());
+    for (const auto & [n, v] : enumerate(list)) {
+        // Create the index value (1-based)
+        auto indexVal = state.allocValue();
+        indexVal->mkInt(n + 1);
+
+        // Apply f to the index to get partial application
+        auto partialApp = state.allocValue();
+        partialApp->mkApp(args[0], indexVal);
+
+        // Apply partial application to the element
+        (v = state.allocValue())->mkApp(partialApp, args[1]->listView()[n]);
+    }
+    v.mkList(list);
+}
+
+static RegisterPrimOp primop_imap1({
+    .name = "__imap1",
+    .args = {"f", "list"},
+    .doc = R"(
+      Apply the function *f* to each element in the list *list*, passing the
+      1-based index as the first argument. For example,
+
+      ```nix
+      builtins.imap1 (i: v: "${v}-${toString i}") [ "a" "b" ]
+      ```
+
+      evaluates to `[ "a-1" "b-2" ]`.
+    )",
+    .fun = prim_imap1,
+});
+
 /* Filter a list using a predicate; that is, return a list containing
    every element from the list for which the predicate function
    returns true. */
