@@ -1,0 +1,1 @@
+{ attrsets = [ { i = 1; v = "x"; } { i = 2; v = "y"; } { i = 3; v = "z"; } ]; empty = [ ]; integers = [ 11 22 33 ]; strings = [ "a-1" "b-2" ]; }
