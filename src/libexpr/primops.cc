@@ -3540,17 +3540,38 @@ static void prim_filterAttrs(EvalState & state, const PosIdx pos, Value ** args,
 
     state.forceFunction(*args[0], pos, "while evaluating the first argument passed to builtins.filterAttrs");
 
-    auto attrs = state.buildBindings(args[1]->attrs()->size());
-
-    for (auto & i : *args[1]->attrs()) {
-        Value * vName = Value::toPtr(state.symbols[i.name]);
-        Value * callArgs[] = {vName, i.value};
+    auto callFilter = [&](const Attr & attr) {
+        Value * vName = Value::toPtr(state.symbols[attr.name]);
+        Value * callArgs[] = {vName, attr.value};
         Value res;
         state.callFunction(*args[0], callArgs, res, noPos);
-        if (state.forceBool(
-                res, pos, "while evaluating the return value of the filtering function passed to builtins.filterAttrs"))
-            attrs.insert(i.name, i.value);
+        return state.forceBool(
+            res, pos, "while evaluating the return value of the filtering function passed to builtins.filterAttrs");
+    };
+
+    auto * inputAttrs = args[1]->attrs();
+    auto it = inputAttrs->begin();
+    auto end = inputAttrs->end();
+
+    // Scan until first rejection.
+    for (; it != end; ++it)
+        if (!callFilter(*it))
+            break;
+
+    // Nothing rejected: return the original attrset without copying.
+    if (it == end) {
+        v = *args[1];
+        return;
     }
+
+    // Build result: copy everything before `it`, skip `it`, then continue filtering.
+    auto attrs = state.buildBindings(inputAttrs->size());
+    for (auto copyIt = inputAttrs->begin(); copyIt != it; ++copyIt)
+        attrs.insert(copyIt->name, copyIt->value);
+
+    for (++it; it != end; ++it)
+        if (callFilter(*it))
+            attrs.insert(it->name, it->value);
 
     v.mkAttrs(attrs.alreadySorted());
 }
