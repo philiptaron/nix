@@ -139,6 +139,10 @@ let
             !(stdenv.hostPlatform.isWindows || stdenv.hostPlatform.isCygwin)
             # build failure
             && !stdenv.hostPlatform.isStatic
+            # musl's fortify-headers declare functions like `vsnprintf` as
+            # `always_inline`, which GCC can't honour under LTO when linking a
+            # shared library ("function body can be overwritten at link time").
+            && !stdenv.hostPlatform.isMusl
           )
           ''
             case "$mesonBuildType" in
