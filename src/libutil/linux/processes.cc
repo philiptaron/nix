@@ -11,6 +11,8 @@
 #include "unix/current-process-private.hh"
 #include "util-unix-config-private.hh"
 
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <cerrno>
 
@@ -50,6 +52,90 @@ struct ExecChildParams
     uid_t uid;
     bool dieWithParent;
 };
+
+#if !HAVE_CLOSEFROM
+/* Layout of the records returned by getdents64(2). Spelled out here rather than
+   using struct dirent, whose layout depends on the libc and _FILE_OFFSET_BITS. */
+struct LinuxDirent64
+{
+    uint64_t d_ino;
+    int64_t d_off;
+    unsigned short d_reclen;
+    unsigned char d_type;
+    char d_name[1];
+};
+
+/*
+ * Close every file descriptor >= lowFd, for libcs without closefrom() (i.e.
+ * musl). Like doExecChild(), this must not allocate memory and may only use
+ * async-signal-safe functions.
+ *
+ * This mirrors glibc's closefrom(): try close_range(), which fails on kernels
+ * older than 5.9 or when it's blocked by seccomp, and otherwise walk
+ * /proc/self/fd like glibc's __closefrom_fallback. If /proc isn't mounted
+ * either, close everything below RLIMIT_NOFILE one at a time.
+ */
+static void closeFrom(int lowFd) noexcept
+{
+#  ifdef SYS_close_range
+    if (::syscall(SYS_close_range, lowFd, ~0u, 0) == 0)
+        return;
+#  endif
+
+    if (int dirFd = ::open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC); dirFd != -1) {
+        alignas(LinuxDirent64) char buf[1024];
+        bool ok = true;
+
+        while (true) {
+            long n = ::syscall(SYS_getdents64, dirFd, buf, sizeof(buf));
+            if (n <= 0) {
+                ok = n == 0;
+                break;
+            }
+
+            bool closedAny = false;
+            for (long off = 0; off < n;) {
+                unsigned short reclen;
+                std::memcpy(&reclen, buf + off + offsetof(LinuxDirent64, d_reclen), sizeof(reclen));
+                const char * name = buf + off + offsetof(LinuxDirent64, d_name);
+                off += reclen;
+
+                /* Skip "." and "..". */
+                if (name[0] < '0' || name[0] > '9')
+                    continue;
+
+                int fd = 0;
+                for (const char * s = name; *s >= '0' && *s <= '9'; ++s)
+                    fd = fd * 10 + (*s - '0');
+
+                if (fd < lowFd || fd == dirFd)
+                    continue;
+
+                ::close(fd);
+                closedAny = true;
+            }
+
+            /* Closing descriptors while iterating can make the directory skip
+               entries, so start over until a pass doesn't close anything. */
+            if (closedAny && ::lseek(dirFd, 0, SEEK_SET) != 0) {
+                ok = false;
+                break;
+            }
+        }
+
+        ::close(dirFd);
+        if (ok)
+            return;
+    }
+
+    struct ::rlimit limit;
+    if (::getrlimit(RLIMIT_NOFILE, &limit) == 0) {
+        rlim_t maxFd = limit.rlim_cur < INT_MAX ? limit.rlim_cur : INT_MAX;
+        for (rlim_t fd = lowFd; fd < maxFd; ++fd)
+            ::close(static_cast<int>(fd));
+    }
+}
+#endif
 
 /*
  * This code is supposed to run in the child right after vfork(). We never
@@ -188,11 +274,8 @@ struct ExecChildParams
        in <unistd.h>. Notably, it has a fallback for kernels that don't support
        close_range. */
     ::closefrom(relocatedErrorPipeFD + 1);
-#elifdef SYS_close_range
-    /* This is mostly best-effort. This code should only be used on musl and it
-       would only fail on older kernels. Reimplementing /proc/self/fd iteration
-       like what glibc does in __closefrom_fallback is a lot of complex code. */
-    ::syscall(SYS_close_range, relocatedErrorPipeFD + 1, ~0u, 0);
+#else
+    closeFrom(relocatedErrorPipeFD + 1);
 #endif
 
     /* Close everything in [3, maxTo) range that isn't supposed to be kept. maxTo + 1
