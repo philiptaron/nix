@@ -84,6 +84,15 @@
       };
 
       /**
+        The subset of `nixpkgsVariants` that applies to the host platform of `pkgs`.
+      */
+      nixpkgsVariantsFor =
+        pkgs:
+        lib.filterAttrs (
+          _: variant: (variant.linuxOnly or false) -> pkgs.stdenv.hostPlatform.isLinux
+        ) nixpkgsVariants;
+
+      /**
         `flatMapAttrs attrs f` applies `f` to each attribute in `attrs` and
         merges the results into a single attribute set.
 
@@ -174,6 +183,17 @@
             crossSystem: makePackageSet nixpkgsFor.${system}.cross.${crossSystem} "stdenv"
           );
           variant = lib.mapAttrs (_: forStdenv: forStdenv.stdenv) variantForStdenv;
+          crossVariant = forAllCrossSystems (
+            crossSystem:
+            let
+              crossPkgs = nixpkgsFor.${system}.cross.${crossSystem};
+            in
+            # Go through `pkgsHostTarget` to avoid splicing in `pkgsBuildHost.${attr}`,
+            # which may not exist (e.g. `pkgsMusl` when building on darwin).
+            lib.mapAttrs (_: { attr, ... }: makePackageSet crossPkgs.pkgsHostTarget.${attr} "stdenv") (
+              nixpkgsVariantsFor crossPkgs
+            )
+          );
         }
       );
 
@@ -334,14 +354,11 @@
                   "${pkgName}" = nixComponentsFor.${system}.native.${pkgName};
                 }
                 # FIXME: The `llvm` variant doesn't actually evaluate on darwin.
-                // flatMapAttrs nixpkgsVariants (
-                  variantName: variant:
-                  lib.optionalAttrs
-                    ((variant.linuxOnly or false) -> nixpkgsFor.${system}.native.stdenv.hostPlatform.isLinux)
-                    {
-                      # These attributes go right into `packages.<system>`.
-                      "${pkgName}-${variantName}" = nixComponentsFor.${system}.variant.${variantName}.${pkgName};
-                    }
+                // flatMapAttrs (nixpkgsVariantsFor nixpkgsFor.${system}.native) (
+                  variantName: _: {
+                    # These attributes go right into `packages.<system>`.
+                    "${pkgName}-${variantName}" = nixComponentsFor.${system}.variant.${variantName}.${pkgName};
+                  }
                 )
                 // flatMapAttrs (lib.genAttrs stdenvs (_: { })) (
                   stdenvName:
@@ -358,10 +375,18 @@
                   { }:
                   lib.optionalAttrs
                     (linuxOnly -> nixpkgsFor.${system}.cross.${crossSystem}.stdenv.hostPlatform.isLinux)
-                    {
-                      # These attributes go right into `packages.<system>`.
-                      "${pkgName}-${crossSystem}" = nixComponentsFor.${system}.cross.${crossSystem}.${pkgName};
-                    }
+                    (
+                      {
+                        # These attributes go right into `packages.<system>`.
+                        "${pkgName}-${crossSystem}" = nixComponentsFor.${system}.cross.${crossSystem}.${pkgName};
+                      }
+                      // flatMapAttrs nixComponentsFor.${system}.crossVariant.${crossSystem} (
+                        variantName: components: {
+                          # These attributes go right into `packages.<system>`.
+                          "${pkgName}-${variantName}-${crossSystem}" = components.${pkgName};
+                        }
+                      )
+                    )
                 )
               )
             )
@@ -425,6 +450,14 @@
             )
             // prefixAttrs "cross" (
               forAllCrossSystems (crossSystem: makeShell' nixComponentsFor.${system}.cross.${crossSystem})
+            )
+            // flatMapAttrs nixComponentsFor.${system}.crossVariant (
+              crossSystem: variants:
+              flatMapAttrs variants (
+                variantName: components: {
+                  "${variantName}-cross-${crossSystem}" = makeShell' components;
+                }
+              )
             )
           )
           // {
