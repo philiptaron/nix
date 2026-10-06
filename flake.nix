@@ -64,6 +64,26 @@
       ];
 
       /**
+        Nixpkgs variants (whole package sets built differently, like `pkgsStatic`)
+        that Nix is built with, keyed by the name used in `packages` and `devShells`.
+      */
+      nixpkgsVariants = {
+        static = {
+          attr = "pkgsStatic";
+        };
+        llvm = {
+          attr = "pkgsLLVM";
+        };
+        musl = {
+          attr = "pkgsMusl";
+          linuxOnly = true;
+        };
+        hardened = {
+          attr = "pkgsExtraHardening";
+        };
+      };
+
+      /**
         `flatMapAttrs attrs f` applies `f` to each attribute in `attrs` and
         merges the results into a single attribute set.
 
@@ -146,18 +166,14 @@
         in
         rec {
           nativeForStdenv = forAllStdenvs (stdenv: makePackageSet pkgs stdenv);
-          nativeStaticForStdenv = forAllStdenvs (
-            stdenv: makePackageSet nixpkgsFor.${system}.native.pkgsStatic stdenv
-          );
-          nativeLLVMForStdenv = forAllStdenvs (
-            stdenv: makePackageSet nixpkgsFor.${system}.native.pkgsLLVM stdenv
-          );
+          variantForStdenv = lib.mapAttrs (
+            _: { attr, ... }: forAllStdenvs (stdenv: makePackageSet pkgs.${attr} stdenv)
+          ) nixpkgsVariants;
           native = nativeForStdenv.stdenv;
           cross = forAllCrossSystems (
             crossSystem: makePackageSet nixpkgsFor.${system}.cross.${crossSystem} "stdenv"
           );
-          nativeStatic = nativeStaticForStdenv.stdenv;
-          nativeLLVM = nativeLLVMForStdenv.stdenv;
+          variant = lib.mapAttrs (_: forStdenv: forStdenv.stdenv) variantForStdenv;
         }
       );
 
@@ -316,10 +332,17 @@
                 {
                   # These attributes go right into `packages.<system>`.
                   "${pkgName}" = nixComponentsFor.${system}.native.${pkgName};
-                  "${pkgName}-static" = nixComponentsFor.${system}.nativeStatic.${pkgName};
-                  # FIXME: These don't actually evaluate on darwin.
-                  "${pkgName}-llvm" = nixComponentsFor.${system}.nativeLLVM.${pkgName};
                 }
+                # FIXME: The `llvm` variant doesn't actually evaluate on darwin.
+                // flatMapAttrs nixpkgsVariants (
+                  variantName: variant:
+                  lib.optionalAttrs
+                    ((variant.linuxOnly or false) -> nixpkgsFor.${system}.native.stdenv.hostPlatform.isLinux)
+                    {
+                      # These attributes go right into `packages.<system>`.
+                      "${pkgName}-${variantName}" = nixComponentsFor.${system}.variant.${variantName}.${pkgName};
+                    }
+                )
                 // flatMapAttrs (lib.genAttrs stdenvs (_: { })) (
                   stdenvName:
                   { }:
@@ -392,13 +415,13 @@
             forAllStdenvs (stdenvName: makeShell' nixComponentsFor.${system}.nativeForStdenv.${stdenvName})
           )
           // lib.optionalAttrs (!nixpkgsFor.${system}.native.stdenv.isDarwin) (
-            prefixAttrs "static" (
-              forAllStdenvs (
-                stdenvName: makeShell' nixComponentsFor.${system}.nativeStaticForStdenv.${stdenvName}
+            flatMapAttrs nixpkgsVariants (
+              variantName: _:
+              prefixAttrs variantName (
+                forAllStdenvs (
+                  stdenvName: makeShell' nixComponentsFor.${system}.variantForStdenv.${variantName}.${stdenvName}
+                )
               )
-            )
-            // prefixAttrs "llvm" (
-              forAllStdenvs (stdenvName: makeShell' nixComponentsFor.${system}.nativeLLVMForStdenv.${stdenvName})
             )
             // prefixAttrs "cross" (
               forAllCrossSystems (crossSystem: makeShell' nixComponentsFor.${system}.cross.${crossSystem})

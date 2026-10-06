@@ -125,7 +125,8 @@ rec {
   )) [ "i686-linux" ];
 
   buildStatic = forAllPackages (
-    pkgName: lib.genAttrs linux64BitSystems (system: nixComponentsFor.${system}.nativeStatic.${pkgName})
+    pkgName:
+    lib.genAttrs linux64BitSystems (system: nixComponentsFor.${system}.variant.static.${pkgName})
   );
 
   buildCross = forAllPackages (
