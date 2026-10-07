@@ -150,6 +150,19 @@
                     });
                   }
                 )
+                # TEMPORARY: static libcrypto on 32-bit ARM needs `-latomic`, which libgit2's
+                # FindPkgLibraries resolves with find_library, but libatomic.a lives in the
+                # compiler's own lib directory.
+                (
+                  final: prev:
+                  lib.optionalAttrs (prev.stdenv.hostPlatform.isAarch32 && prev.stdenv.hostPlatform.isStatic) {
+                    libgit2 = prev.libgit2.overrideAttrs (old: {
+                      cmakeFlags = (old.cmakeFlags or [ ]) ++ [
+                        "-DCMAKE_LIBRARY_PATH=${prev.stdenv.cc.cc.lib}/${prev.stdenv.hostPlatform.config}/lib"
+                      ];
+                    });
+                  }
+                )
               ];
               crossSystem =
                 if crossSystem == null then
