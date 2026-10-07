@@ -134,6 +134,23 @@
               localSystem = {
                 inherit system;
               };
+              # TEMPORARY: NixOS/nixpkgs#570907 (sqlite: fix tests on musl), until it reaches nixos-unstable.
+              overlays = [
+                (
+                  final: prev:
+                  lib.optionalAttrs (prev.stdenv.hostPlatform.isMusl && !prev.stdenv.hostPlatform.isStatic) {
+                    sqlite = prev.sqlite.overrideAttrs (old: {
+                      postPatch = (old.postPatch or "") + ''
+                        substituteInPlace test/capi3c.test \
+                          --replace-fail \
+                            'if {[clang_sanitize_address]==0} {' \
+                            'if {0 && [clang_sanitize_address]==0} {'
+                      '';
+                      checkFlags = (old.checkFlags or [ ]) ++ [ "TSTRNNR_OPTS=~fuzzcheck-%san" ];
+                    });
+                  }
+                )
+              ];
               crossSystem =
                 if crossSystem == null then
                   null
