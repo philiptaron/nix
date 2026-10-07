@@ -163,6 +163,18 @@
                     });
                   }
                 )
+                # TEMPORARY: openssl_3_5 references ./3.5/fix-mingw-linking.patch, which
+                # NixOS/nixpkgs@714f328f9496 deleted.
+                (
+                  final: prev:
+                  lib.optionalAttrs prev.stdenv.hostPlatform.isMinGW {
+                    openssl_3_5 = prev.openssl_3_5.overrideAttrs (old: {
+                      patches = lib.filter (
+                        p: baseNameOf (toString p) != "fix-mingw-linking.patch"
+                      ) old.patches;
+                    });
+                  }
+                )
               ];
               crossSystem =
                 if crossSystem == null then
